@@ -4,6 +4,8 @@
 # 
 # Copyright 2011, 2012, 2013, 2014, 2015, 2016, 2017 Max H. Parke KA1RBI
 # 
+# Copyright 2018-2019 Graham J. Norbury
+# 
 # Copyright 2003,2004,2005,2006 Free Software Foundation, Inc.
 #         (from radiorausch)
 # 
@@ -384,33 +386,37 @@ class p25_rx_block (gr.top_block):
             self.eye_sink.set_sps(self.sps)
 
     def change_freq(self, params):
+        last_freq = self.last_freq_params['freq']
         self.last_freq_params = params
         freq = params['freq']
         offset = params['offset']
         center_freq = params['center_frequency']
 
-        if self.options.hamlib_model:
-            self.hamlib.set_freq(freq)
-        elif (not self.options.symbols) and params['center_frequency']:
-            relative_freq = center_freq - freq
-            if abs(relative_freq + self.options.offset) > self.channel_rate / 2:
-                self.lo_freq = self.options.offset					# relative tune not possible
-                self.demod.set_relative_frequency(self.lo_freq)				# reset demod relative freq
-                self.set_freq(freq + offset)						# direct tune instead
-            else:    
-                self.lo_freq = self.options.offset + relative_freq
-                if self.demod.set_relative_frequency(self.lo_freq):			# relative tune successful
-                    self.set_freq(center_freq + offset)
-                    if self.fft_sink:
-                        self.fft_sink.set_relative_freq(relative_freq)
-                else:
-                    self.lo_freq = self.options.offset					# relative tune unsuccessful
+        if freq != last_freq:								# ignore requests to tune to same freq
+            if self.options.hamlib_model:
+                self.hamlib.set_freq(freq)
+            elif (not self.options.symbols) and params['center_frequency']:
+                relative_freq = center_freq - freq
+                if abs(relative_freq + self.options.offset) > self.channel_rate / 2:
+                    self.lo_freq = self.options.offset					# relative tune not possible
                     self.demod.set_relative_frequency(self.lo_freq)			# reset demod relative freq
                     self.set_freq(freq + offset)					# direct tune instead
-        elif not self.options.symbols:
-            self.set_freq(freq + offset)
-        else:
-            pass	# fake tuning when playing back symbols file
+                else:    
+                    self.lo_freq = self.options.offset + relative_freq
+                    if self.demod.set_relative_frequency(self.lo_freq):			# relative tune successful
+                        self.demod.reset()                                              # reset gardner-costas loop
+                        self.set_freq(center_freq + offset)
+                        if self.fft_sink:
+                            self.fft_sink.set_relative_freq(relative_freq)
+                    else:
+                        self.lo_freq = self.options.offset				# relative tune unsuccessful
+                        self.demod.set_relative_frequency(self.lo_freq)			# reset demod relative freq
+                        self.set_freq(freq + offset)					# direct tune instead
+            elif not self.options.symbols:
+                self.set_freq(freq + offset)
+            else:
+                pass	# fake tuning when playing back symbols file
+            self.decoder.reset_timer()
 
         self.configure_tdma(params)
         self.freq_update()
@@ -492,6 +498,7 @@ class p25_rx_block (gr.top_block):
         self.target_freq = target_freq
         tune_freq = target_freq + self.options.calibration + self.options.offset + self.options.fine_tune
         r = self.src.set_center_freq(tune_freq)
+        self.demod.reset()      # reset gardner-costas loop
 
         if self.fft_sink:
             self.fft_sink.set_center_freq(target_freq)
@@ -511,7 +518,6 @@ class p25_rx_block (gr.top_block):
             return False
         self.options.fine_tune += tune_incr;
         self.set_freq(self.target_freq)
-        self.demod.reset()      # reset gardner-costas loop
         return True
 
     def toggle_plot(self, plot_type):
@@ -565,17 +571,24 @@ class p25_rx_block (gr.top_block):
         if (self.fft_sink is None):
             self.fft_sink = fft_sink_c()
             self.add_plot_sink(self.fft_sink)
-            self.spectrum_decim = filter.rational_resampler_ccf(1, self.options.decim_amt)
+            if self.options.decim_amt > 1:
+                self.spectrum_decim = filter.rational_resampler_ccf(1, self.options.decim_amt)
+            else:
+                self.spectrum_decim = None
             self.fft_sink.set_offset(self.options.offset)
             self.fft_sink.set_center_freq(self.target_freq)
             self.fft_sink.set_width(self.options.sample_rate)
             self.lock()
-            self.connect(self.spectrum_decim, self.fft_sink)
-            self.demod.connect_complex('src', self.spectrum_decim)
+            if self.spectrum_decim is not None:
+                self.connect(self.spectrum_decim, self.fft_sink)
+                self.demod.connect_complex('src', self.spectrum_decim)
+            else:
+                self.demod.connect_complex('src', self.fft_sink)
             self.unlock()
         elif (self.fft_sink is not None):
             self.lock()
-            self.disconnect(self.spectrum_decim, self.fft_sink)
+            if self.spectrum_decim is not None:
+                self.disconnect(self.spectrum_decim, self.fft_sink)
             self.demod.disconnect_complex()
             self.unlock()
             self.fft_sink.kill()
@@ -779,7 +792,7 @@ class p25_rx_block (gr.top_block):
 
     def process_qmsg(self, msg):
         # return true = end top block
-        RX_COMMANDS = 'skip lockout hold'
+        RX_COMMANDS = 'skip lockout hold whitelist reload'
         s = msg.to_string()
         if s == 'quit': return True
         elif s == 'update':

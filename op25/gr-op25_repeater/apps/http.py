@@ -41,7 +41,7 @@ TODO: make less fake
 """
 
 def static_file(environ, start_response):
-    content_types = { 'png': 'image/png', 'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'gif': 'image/gif', 'css': 'text/css', 'js': 'application/javascript', 'html': 'text/html'}
+    content_types = { 'png': 'image/png', 'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'gif': 'image/gif', 'css': 'text/css', 'js': 'application/javascript', 'html': 'text/html', 'ico' : 'image/x-icon'}
     img_types = 'png jpg jpeg gif'.split()
     if environ['PATH_INFO'] == '/':
         filename = 'index.html'
@@ -136,7 +136,11 @@ class http_server(object):
         my_recv_q = gr.msg_queue(10)
         self.q_watcher = queue_watcher(my_input_q, process_qmsg)
 
-        self.server = create_server(application, host=host, port=my_port)
+        try:
+            self.server = create_server(application, host=host, port=my_port)
+        except:
+            sys.stderr.write('Failed to create http terminal server\n%s\n' % traceback.format_exc())
+            sys.exit(1)
 
     def run(self):
         self.server.run()
